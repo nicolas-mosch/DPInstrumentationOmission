@@ -41,75 +41,15 @@
 // #include "llvm/IR/InstIterator.h"
 #define DEBUG_TYPE "dep-analysis"
 
-
-
 using namespace std;
 using namespace llvm;
 
 namespace {
-  void recursiveDepFinderHelper2(vector<Instruction*>* checkedInstructions, DependenceInfo &DI, PDG* DG, PDG* CFG, Instruction* I, Instruction* C){
-    checkedInstructions->push_back(C);
-    if(CFG->getNode(C) == CFG->getEntry()){
-      return;
-    }
-    errs() << "\t" << CFG->getNodeIndex(C) <<": ";
-
-    if(auto D = DI.depends(C, I, true)){
-      string varNameSrc = I->getOperand(isa<StoreInst>(I) ? 1 : 0)->getName().str();
-      string varNameDst = C->getOperand(isa<StoreInst>(C) ? 1 : 0)->getName().str();
-      if(varNameSrc == varNameDst){
-        if (D->isOutput())
-        {
-            DG->addEdge(I, C, EdgeDepType::WAW);
-            errs() << "WAR\n";
-            return;
-        }
-        else if (D->isFlow())
-        {
-            DG->addEdge(I, C, EdgeDepType::RAW);
-            errs() << "WAR\n";
-            return;
-        }
-        else if (D->isAnti())
-        {
-            DG->addEdge(I, C, EdgeDepType::WAR);
-            errs() << "WAR\n";
-            return;
-        }
-        errs() << "RAR\n";
-      }
-    }else{
-      errs() << "none\n";
-    }
-    for(auto edge: CFG->getInEdges(C)){
-      if(find(checkedInstructions->begin(), checkedInstructions->end(), edge->getSrc()->getItem()) == checkedInstructions->end()){
-        recursiveDepFinderHelper2(checkedInstructions, DI, DG, CFG, I, edge->getSrc()->getItem());
-      }
-    }
-  }
-
-  bool recursiveDepFinderHelper1(vector<Instruction*>* checkedInstructions, DependenceInfo &DI, PDG* DG, PDG* CFG, Instruction* I){
-    errs() << "Checking dependencies for " << CFG->getNodeIndex(I) << "\n";
-    checkedInstructions->push_back(I);
-    for(auto edge: CFG->getInEdges(I)){
-      recursiveDepFinderHelper2(new vector<Instruction*>(), DI, DG, CFG, I, edge->getSrc()->getItem());
-      if(find(checkedInstructions->begin(), checkedInstructions->end(), edge->getSrc()->getItem()) == checkedInstructions->end()){
-        recursiveDepFinderHelper1(checkedInstructions, DI, DG, CFG, edge->getSrc()->getItem());
-      }
-    }
-  }
-
-  void recursiveDepFinder(DependenceInfo &DI, PDG* DG, PDG* CFG){
-    errs() << "recursiveDepFinder\n";a
-    vector<Instruction*>* checkedInstructions = new vector<Instruction*>();
-    for(auto edge: CFG->getInEdges(CFG->getExit())){
-      recursiveDepFinderHelper1(checkedInstructions, DI, DG, CFG, edge->getSrc()->getItem());
-    }
-  }
-
-
   struct DepAnalysis : public FunctionPass {
     static char ID;
+    DependenceInfo *DI;
+    LoopInfo *LI;
+    PDG *DG, *CFG;
 
     DepAnalysis() : FunctionPass(ID) {}
 
@@ -134,7 +74,7 @@ namespace {
       
       // Create Load/Store-Instruction-CFG
 
-      auto CFG = new PDG(F.getName(), &F);
+      CFG = new PDG(F.getName(), &F);
       
       for (inst_iterator I = inst_begin(F), SrcE = inst_end(F); I != SrcE; ++I) {
           if((&*I)->getDebugLoc() && (isa<StoreInst>(*I) || isa<LoadInst>(*I))){
@@ -144,7 +84,7 @@ namespace {
       
       errs() << "Building CFG\n";
       std::function<void(BasicBlock*,Instruction*)> add_first_successor_store_load_instructions;
-      add_first_successor_store_load_instructions = [CFG, &add_first_successor_store_load_instructions](BasicBlock *BB, Instruction* previousInstruction) 
+      add_first_successor_store_load_instructions = [&](BasicBlock *BB, Instruction* previousInstruction) 
       {
         for (BasicBlock *S : successors(BB)) {
           for (Instruction &I : *S){
@@ -193,10 +133,10 @@ namespace {
       
       errs() << "Building Dep-Graph\n";
       // Create Dependence Graph
-      DependenceInfo DI = getAnalysis<DependenceAnalysisWrapperPass>().getDI();
-	    LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+      DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
+	    LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
 
-      auto DG = new PDG(F.getName(), &F);
+      DG = new PDG(F.getName(), &F);
 
       map<string, DIScope*> declareMap;
 	    string varNameSrc, varNameDst;
@@ -208,7 +148,7 @@ namespace {
         if(dl){
           if(isa<StoreInst>(&*I) || isa<LoadInst>(&*I)){
             DG->addNode(&*I);
-            if(isa<StoreInst>(&*I) && LI.getLoopFor((*I).getParent())){
+            if(isa<StoreInst>(&*I) && LI->getLoopFor((*I).getParent())){
               possibleFPVs.push_back((*I).getOperand(1)->getName().str());
             }
           }
@@ -228,11 +168,14 @@ namespace {
 
       errs() << "]\n";
 
-      recursiveDepFinder(DI, DG, CFG);
+
+
+      recursiveDepFinder();
 
       DG->dumpToDot(F.getName().str() + "_deps.dot");
       
       // Remove possible false positives
+      /*
       Instruction *src, *dst;
       for(auto edge : DG->getEdges()){
         src = edge->getSrc()->getItem();
@@ -255,11 +198,78 @@ namespace {
           }
         }
       }
+      */
 
       DG->dumpToDot(F.getName().str() + "_deps2.dot");
       
       errs() << "done2\n";
       return false;
+    }
+
+    void recursiveDepFinder(){
+      errs() << "recursiveDepFinder\n";
+      vector<Instruction*>* checkedInstructions = new vector<Instruction*>();
+      for(auto edge: CFG->getInEdges(CFG->getExit())){
+        recursiveDepFinderHelper1(checkedInstructions, edge->getSrc()->getItem());
+      }
+    }
+
+    bool recursiveDepFinderHelper1(vector<Instruction*>* checkedInstructions, Instruction* I){
+      errs() << "Checking dependencies for " << CFG->getNodeIndex(I) << "\n";
+      checkedInstructions->push_back(I);
+      for(auto edge: CFG->getInEdges(I)){
+        recursiveDepFinderHelper2(new vector<Instruction*>(), I, edge->getSrc()->getItem());
+        if(find(checkedInstructions->begin(), checkedInstructions->end(), edge->getSrc()->getItem()) == checkedInstructions->end()){
+          recursiveDepFinderHelper1(checkedInstructions, edge->getSrc()->getItem());
+        }
+      }
+    }
+
+    void recursiveDepFinderHelper2(vector<Instruction*>* checkedInstructions, Instruction* I, Instruction* C){
+      checkedInstructions->push_back(C);
+      if(CFG->getNode(C) == CFG->getEntry()){
+        return;
+      }
+      errs() << "\t" << CFG->getNodeIndex(C) <<": ";
+
+      if(auto D = DI->depends(C, I, true)){
+        string varNameSrc = I->getOperand(isa<StoreInst>(I) ? 1 : 0)->getName().str();
+        string varNameDst = C->getOperand(isa<StoreInst>(C) ? 1 : 0)->getName().str();
+        if(varNameSrc == varNameDst){
+          if (D->isOutput())
+          {
+              DG->addEdge(I, C, EdgeDepType::WAW);
+              errs() << "WAW";
+          }
+          else if (D->isFlow())
+          {
+              DG->addEdge(I, C, EdgeDepType::RAW);
+              errs() << "RAW";
+          }
+          else if (D->isAnti())
+          {
+              DG->addEdge(I, C, EdgeDepType::WAR);
+              errs() << "WAR";
+          }else{
+            errs() << "RAR\n";
+            return;
+          }
+          if(
+            (LI->getLoopFor((*C).getParent()) || LI->getLoopFor((*I).getParent()))
+              && (*C).getParent() != (*I).getParent()
+          ){
+            errs() << " (boundary dep)" ;
+          }
+          errs() << "\n";
+        }
+      }else{
+        errs() << "none\n";
+      }
+      for(auto edge: CFG->getInEdges(C)){
+        if(find(checkedInstructions->begin(), checkedInstructions->end(), edge->getSrc()->getItem()) == checkedInstructions->end()){
+          recursiveDepFinderHelper2(checkedInstructions, I, edge->getSrc()->getItem());
+        }
+      }
     }
   };
 }
