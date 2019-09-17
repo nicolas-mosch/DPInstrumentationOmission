@@ -74,6 +74,7 @@ public:
 
 	void dumpToDot(std::string graphName);
 	void dumpToDot();
+	void dumpInstructionInfo();
 	std::string edgeLabel(Edge<Instruction*, EdgeDepType> *e);
 	void connectToEntry(Instruction* inst);
 	void connectToExit(Instruction* inst);

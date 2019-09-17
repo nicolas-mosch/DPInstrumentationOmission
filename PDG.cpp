@@ -9,9 +9,14 @@
 #include <fstream>
 #include <regex>
 
+#define DEBUG_TYPE "dep-analysis"
 
 static cl::opt<bool, false> removeTransitiveDeps("removeTransitiveDeps", cl::desc("Remove transitive dependencies"), cl::NotHidden);
 static cl::opt<string> fmap("fmap", cl::desc("DP-FileMapping filename"), cl::value_desc("filename"));
+
+STATISTIC(noDepInstrCount, "Free Store/Load Instructions");
+STATISTIC(instrCount, "Total Store/Load Instructions");
+
 
 string PDG::edgeLabel(Edge<Instruction*, EdgeDepType> *e)
 {
@@ -43,7 +48,7 @@ void PDG::dumpToDot(){
 void PDG::dumpToDot(std::string graphName)
 {
 	
-	errs() << "Generating DOT file for " << functionName << "\n";
+	// errs() << "Generating DOT file for " << functionName << "\n";
 	// Write the graph to a DOT file
 	ofstream dotStream;
 	dotStream.open(graphName);
@@ -58,10 +63,7 @@ void PDG::dumpToDot(std::string graphName)
 		// Create all nodes in DOT format
 		for (auto node : getNodes())
 		{
-			if(getInEdges(node).empty() && getOutEdges(node).empty()){
-				;
-			}
-			else if (node == this->entry)
+			if (node == this->entry)
 				dotStream << "\t\"" << getNodeIndex(node) << "\" [label=entry];\n";
 			else if (node == this->exit)
 				dotStream << "\t\"" << getNodeIndex(node) << "\" [label=exit];\n";
@@ -117,8 +119,41 @@ void PDG::dumpToDot(std::string graphName)
 		dotStream.close();
 	}
 
-	errs() << "Finished generating dot file for " << functionName << "\n";
-	errs() << "\n\n";
+	// errs() << "Finished generating dot file for " << functionName << "\n";
+	// errs() << "\n\n";
+}
+
+void PDG::dumpInstructionInfo(){
+	errs() << "dumpInstructionInfo()\n";
+	ofstream stream;
+	stream.open(functionName + "_intructions.txt");
+	if (!stream.is_open())
+	{
+		errs() << "Problem opening DOT file: " << functionName << "_instructions.txt\n";
+		return;
+	}
+	int c = 0;
+	for (auto node : getNodes())
+	{
+		if(node != entry && node != exit && getInEdges(node).empty() && getOutEdges(node).empty()){
+			DebugLoc dl = node->getItem()->getDebugLoc();
+			if(dl && (isa<StoreInst>(*node->getItem()) || isa<LoadInst>(*node->getItem()))){
+				bool isWrite = isa<StoreInst>(node->getItem());
+				stream 
+					<< (isWrite ? "w" : "r")
+					<< "|" << node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str()
+					<< "|" << dl.getLine()
+					<< "|" << dl.getCol()
+					<< "\n"
+				;
+				++noDepInstrCount;
+				++c;
+			}
+		}
+		++instrCount;
+	}
+	errs() << "Instructions found for " << functionName << ": " << c << "\n";
+	stream.close();
 }
 
 void PDG::connectToEntry(Instruction* inst)
