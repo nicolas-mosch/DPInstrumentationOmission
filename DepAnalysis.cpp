@@ -35,6 +35,7 @@
 
 #include "llvm/IR/IRBuilder.h"
 
+#include <fstream>
 // #include "llvm/ADT/Statistic.h"
 // #include "llvm/Analysis/MemorySSA.h"
 // #include "llvm/Analysis/DependenceAnalysis.h"
@@ -44,7 +45,8 @@
 using namespace std;
 using namespace llvm;
 
-STATISTIC(instrCount2, "Total Store/Load Instructions (2)");
+STATISTIC(instrCount, "Total Store/Load Instructions");
+STATISTIC(iinstrCount, "Disregardable Store/Load Instructions");
 
 namespace {
   struct DepAnalysis : public FunctionPass {
@@ -199,23 +201,37 @@ namespace {
           if(!isSafe(node->getItem()) || isWrite){
             declareMap[varName] = true;
           }
+          ++instrCount;
         }
       }
 
+
+      ofstream stream;
+      stream.open("ignoring_intructions.txt", ios_base::app);
+      if (!stream.is_open())
+      {
+        errs() << "Problem opening file: ignoring_intructions.txt\n";
+        return false;
+      }
       int c = 0;
-      errs() << "Read-only instr:\n"; 
       for(auto node : DG->getNodes()){
         if(node != DG->getEntry() && node != DG->getExit()){
           isWrite = isa<StoreInst>(node->getItem());
           varName = node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str();
           if(declareMap.count(varName) > 0 && !declareMap[varName]){
-            //DebugLoc dl = node->getItem()->getDebugLoc();
-            ++instrCount2;
-            ++c;
+            DebugLoc dl = node->getItem()->getDebugLoc();
+            stream 
+              << (isWrite ? "w" : "r")
+              << "|" << node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str()
+              << "|" << dl.getLine()
+              << "|" << dl.getCol()
+              << "\n"
+            ;
+            ++iinstrCount;
           }
         }
       }
-      errs() << "Instructions found for " << F.getName() << " (2): " << c << "\n";
+      // errs() << "Instructions found for " << F.getName() << " (2): " << c << "\n";
       // errs() << "possibleFPVs: [";
       // for(string s : possibleFPVs){
         // errs() << s << ", ";
@@ -229,7 +245,7 @@ namespace {
 
       //errs() << "\tPrinting DepGraph to " << F.getName().str() + "_deps.dot\n";
       //DG->dumpToDot(F.getName().str() + "_deps.dot");
-      DG->dumpInstructionInfo();
+      //DG->dumpInstructionInfo();
       /*
       // Remove possible false positives
       
@@ -264,27 +280,16 @@ namespace {
     }
 
     bool isSafe(Instruction* I) {
-      Value* operand;
+      Value* operand = I->getOperand(isa<StoreInst>(I) ? 1 : 0);
+      Type* type = operand->getType();
 
-      if(isa<StoreInst>(I)){
-        operand = dyn_cast<StoreInst>(I)->getPointerOperand();
-      }else{
-        operand = dyn_cast<LoadInst>(I)->getPointerOperand();
-      }
-
-      if (isa<GlobalVariable>(*operand)) {
-        return false;
-      }
-
-      Type* structType = cast<PointerType>(operand->getType());
-      
-      if (structType->getTypeID() == Type::PointerTyID) {
-        while(structType->getTypeID() == Type::PointerTyID) {
-            structType = cast<PointerType>(structType)->getElementType();
+      for(Type* subType : type->subtypes()){
+        if(subType->isPointerTy() || subType->isArrayTy()){
+          return false;
         }
       }
 
-      return structType->getTypeID() == Type::StructTyID || structType->getTypeID() == Type::ArrayTyID ? false : true;
+      return true;
     }
 
     void recursiveDepFinder(){
