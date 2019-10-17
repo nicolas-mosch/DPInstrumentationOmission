@@ -17,7 +17,6 @@ static cl::opt<string> fmap("fmap", cl::desc("DP-FileMapping filename"), cl::val
 STATISTIC(noDepInstrCount, "Free Store/Load Instructions");
 STATISTIC(instrCount, "Total Store/Load Instructions");
 
-
 string PDG::edgeLabel(Edge<Instruction*, EdgeDepType> *e)
 {
 	switch (e->getType())
@@ -69,19 +68,27 @@ void PDG::dumpToDot(std::string graphName)
 				dotStream << "\t\"" << getNodeIndex(node) << "\" [label=exit];\n";
 			else if (node->getItem()){
 				DebugLoc dl = node->getItem()->getDebugLoc();
-				if(dl && (isa<StoreInst>(*node->getItem()) || isa<LoadInst>(*node->getItem()))){
-					bool isWrite = isa<StoreInst>(node->getItem());
-					bool isRead = isa<LoadInst>(node->getItem());
+				if(!dl) continue;
+				Instruction *I = node->getItem();
+				if(isa<StoreInst>(I) || isa<LoadInst>(I)){
+					bool isWrite = isa<StoreInst>(I);
+					bool isRead = isa<LoadInst>(I);
 					dotStream << "\t\"" << 
 					getNodeIndex(node) 
 					<< "\" [label=\"" << getNodeIndex(node) << "\\n"
 					//<< getNodeIndex(node) 
 					<< (isWrite ? "write" : (isRead ? "read" : "?")) << "("
-					<< node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str()
+					<< I->getOperand(isWrite ? 1 : 0)->getName().str()
 					<< "): " <<  (dl ? to_string(dl.getLine()) : "") << (dl ? "," : "") << (dl ? to_string(dl.getCol()) : "")
-					<< "\"];\n";
-				}else{
-					errs() << "Couldn't draw node for: " << *(node->getItem()) << "\n";
+					<< "\"" << (node->isHighlighted() ? ",style=filled,fillcolor=gray": "")
+					<< "];\n";
+				}else if(DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(I)){
+					dotStream << "\t\"" << 
+					getNodeIndex(node) 
+					<< "\" [label=\"" << getNodeIndex(node) << "\\n"
+					<< "declare(" << DbgDeclare->getAddress()->getName().str() << "): "
+					<<  (dl ? to_string(dl.getLine()) : "") << (dl ? "," : "") << (dl ? to_string(dl.getCol()) : "")
+					<< "\"" << ",shape=rectangle,fillcolor=wheat,style=filled];\n";
 				}
 			}
 		}

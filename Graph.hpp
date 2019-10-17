@@ -13,24 +13,25 @@
 #include <algorithm>
 #include <iterator>
 
-struct debugInfo{
-	int line;
-	int col;
-	std::string varName;
-};
-
 template<typename NodeT>
 class Node
 {
 private:
 	NodeT item;
+	bool highlighted;
 public:
 	Node(NodeT _item) 
 		: item(_item)
-		{}
+		{highlighted = false;}
 	~Node() {};
-
+	void highlight(){
+		highlighted = true;
+	}
+	bool isHighlighted(){
+		return highlighted;
+	}
 	NodeT getItem() const { return item; }
+
 };
 
 template<typename NodeT, typename EdgeT>
@@ -199,6 +200,11 @@ public:
 
 	Edge<NodeT, EdgeT> *addEdge(Node<NodeT> *src, Node<NodeT> *dst, EdgeT e)
 	{
+		for(Edge<NodeT, EdgeT> *ed : outEdges[src]){
+			if(ed->getDst() == dst && ed->getType() == e){
+				return nullptr;
+			}
+		}
 		Edge<NodeT, EdgeT> *edge = new Edge<NodeT, EdgeT>(src, dst, e);
 		outEdges[src].insert(edge);
 		inEdges[dst].insert(edge);

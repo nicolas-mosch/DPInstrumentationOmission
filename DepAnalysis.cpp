@@ -73,7 +73,7 @@ namespace {
         return false;
       }
       */
-      errs() << "DepAnalysis on " << F.getName() << "\n";
+      errs() << "\n---------- DepAnalysis on " << F.getName() << " ----------\n";
 
       //LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
       //RegionInfo &RI = getAnalysis<RegionInfoPass>().getRegionInfo();
@@ -81,24 +81,68 @@ namespace {
       //auto &PDT = getAnalysis<PostDominatorTree>();
       DebugLoc dl;
       
-      // Create Load/Store-Instruction-CFG
+      errs() << "\tBuilding DepGraph\n";
+      DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
+	    LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+
+      DG = new PDG(F.getName(), &F);
+
+      map<string, bool> declareMap;
+	    string varNameSrc, varNameDst;
 
       CFG = new PDG(F.getName(), &F);
       
+      // Get declaration locs and add all store/load-instructions to graph
+      vector<string> possibleFPVs;
+      set<Value*> unsafeOperands;
+      Value* operand;
+      string varName;
       for (inst_iterator I = inst_begin(F), SrcE = inst_end(F); I != SrcE; ++I) {
-          if((&*I)->getDebugLoc() && (isa<StoreInst>(*I) || isa<LoadInst>(*I))){
-              CFG->addNode(&*I);
+        dl = (&*I)->getDebugLoc();
+        if(dl){
+          if(CallInst* call_inst = dyn_cast<CallInst>(&*I)){
+            Function* fn = call_inst->getCalledFunction();
+            for(int i = 0; i < call_inst->getNumOperands() - 1; ++i){
+              operand = call_inst->getArgOperand(i);
+              errs() << *(operand->getType()) << " " << operand->getName().str();
+              if(!isSafe(operand->getType())){
+                unsafeOperands.insert(operand);
+              }
+            }
+          }else if(isa<StoreInst>(&*I) || isa<LoadInst>(&*I)){
+            DG->addNode(&*I);
+            CFG->addNode(&*I);
+            if(isa<StoreInst>(&*I) && LI->getLoopFor((*I).getParent())){
+              possibleFPVs.push_back((*I).getOperand(1)->getName().str());
+            }
           }
+          if (DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(&*I)) {
+            //declareMap[DbgDeclare->getAddress()->getName().str()] = s;
+            declareMap[DbgDeclare->getAddress()->getName().str()] = false;
+            varName = DbgDeclare->getAddress()->getName().str();
+          } else if (DbgValueInst* DbgValue = dyn_cast<DbgValueInst>(&*I)) {
+            //declareMap[DbgValue->getValue()->getName().str()] = s;
+            varName = DbgValue->getValue()->getName().str();
+          }else{
+            continue;
+          }
+          CFG->addNode(&*I);
+          declareMap[varName] = false;
+          // errs() << varName << ": " << dl.getLine() << "|" << dl.getCol() << "\n";
+        }
       }
-      
-      errs() << "\tBuilding CFG\n";
+
       std::function<void(BasicBlock*,Instruction*)> add_first_successor_store_load_instructions;
       add_first_successor_store_load_instructions = [&](BasicBlock *BB, Instruction* previousInstruction) 
       {
         for (BasicBlock *S : successors(BB)) {
           for (Instruction &I : *S){
             DebugLoc dl = I.getDebugLoc();
-            if(dl && (isa<StoreInst>(I) || isa<LoadInst>(I))){
+            if(!dl) continue;
+            if(isa<StoreInst>(I) || isa<LoadInst>(I)){
+              CFG->addEdge(previousInstruction, &I, EdgeDepType::CTR);
+              goto next;
+            }else if(DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(&I)){
               CFG->addEdge(previousInstruction, &I, EdgeDepType::CTR);
               goto next;
             }
@@ -115,7 +159,9 @@ namespace {
         previousInstruction = nullptr;
         for (Instruction &I : BB){
           dl = I.getDebugLoc();
-          if(dl && (isa<StoreInst>(I) || isa<LoadInst>(I))){
+          if(!dl) continue;
+          DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(&I);
+          if(isa<StoreInst>(I) || isa<LoadInst>(I) || DbgDeclare){
             if(previousInstruction != nullptr){
                 CFG->addEdge(previousInstruction, &I, EdgeDepType::CTR);
             }
@@ -128,14 +174,14 @@ namespace {
         }
       }
       
-      
+      // Conect exit nodes
       for(auto node : CFG->getNodes()){
         if(node != CFG->getEntry() && node != CFG->getExit()){
           if(CFG->getInEdges(node).empty()){
             CFG->connectToEntry(node->getItem());
           }else if(
             CFG->getInEdges(node).size() == 1
-            && node->getItem()->getParent()->getName() == "for.cond"
+            && node->getItem()->getParent()->getName().find("for.cond") != string::npos
           ){
             CFG->connectToExit(node->getItem());
           }
@@ -143,51 +189,10 @@ namespace {
             CFG->connectToExit(node->getItem());
           }else if(
             CFG->getOutEdges(node).size() == 1
-            && node->getItem()->getParent()->getName() == "for.inc"
+            && node->getItem()->getParent()->getName().find("for.inc") != string::npos
           ){
             CFG->connectToExit(node->getItem());
           }
-        }
-      }
-      
-      errs() << "\tPrinting CFG to " << F.getName().str() + "_cfg.dot\n";
-      CFG->dumpToDot(F.getName().str() + "_cfg.dot");
-      
-      // errs() << "Building Dep-Graph\n";
-      // Create Dependence Graph
-      errs() << "\tBuilding DepGraph\n";
-      DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
-	    LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-
-      DG = new PDG(F.getName(), &F);
-
-      map<string, bool> declareMap;
-	    string varNameSrc, varNameDst;
-    
-      // Get declaration locs and add all store/load-instructions to graph
-      vector<string> possibleFPVs;
-      string varName;
-      for (inst_iterator I = inst_begin(F), SrcE = inst_end(F); I != SrcE; ++I) {
-        dl = (&*I)->getDebugLoc();
-        if(dl){
-          if(isa<StoreInst>(&*I) || isa<LoadInst>(&*I)){
-            DG->addNode(&*I);
-            if(isa<StoreInst>(&*I) && LI->getLoopFor((*I).getParent())){
-              possibleFPVs.push_back((*I).getOperand(1)->getName().str());
-            }
-          }
-          if (DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(&*I)) {
-            //declareMap[DbgDeclare->getAddress()->getName().str()] = s;
-            declareMap[DbgDeclare->getAddress()->getName().str()] = false;
-            varName = DbgDeclare->getAddress()->getName().str();
-          } else if (DbgValueInst* DbgValue = dyn_cast<DbgValueInst>(&*I)) {
-            //declareMap[DbgValue->getValue()->getName().str()] = s;
-            varName = DbgValue->getValue()->getName().str();
-          }else{
-            continue;
-          }
-          declareMap[varName] = false;
-          // errs() << varName << ": " << dl.getLine() << "|" << dl.getCol() << "\n";
         }
       }
 
@@ -197,8 +202,10 @@ namespace {
         if(node != DG->getEntry() && node != DG->getExit()){
           isWrite = isa<StoreInst>(node->getItem());
           varName = node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str();
-          
-          if(!isSafe(node->getItem()) || isWrite){
+          if(unsafeOperands.find(node->getItem()->getOperand(isWrite ? 1 : 0)) != unsafeOperands.end()){
+            declareMap[varName] = true;
+          }
+          if(!isSafe(node->getItem())/* || isWrite*/){
             declareMap[varName] = true;
           }
           ++instrCount;
@@ -213,14 +220,15 @@ namespace {
         errs() << "Problem opening file: ignoring_intructions.txt\n";
         return false;
       }
-      int c = 0;
       for(auto node : DG->getNodes()){
         if(node != DG->getEntry() && node != DG->getExit()){
           isWrite = isa<StoreInst>(node->getItem());
           varName = node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str();
-          if(declareMap.count(varName) > 0 && !declareMap[varName]){
+          if(declareMap.count(varName) > 0 && !declareMap[varName]/* || varName == "retval"*/){
+            CFG->getNode(node->getItem())->highlight();
+            node->highlight();
             DebugLoc dl = node->getItem()->getDebugLoc();
-            stream 
+            stream
               << (isWrite ? "w" : "r")
               << "|" << node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str()
               << "|" << dl.getLine()
@@ -241,11 +249,14 @@ namespace {
 
 
 
-      //recursiveDepFinder();
+      recursiveDepFinder();
 
-      //errs() << "\tPrinting DepGraph to " << F.getName().str() + "_deps.dot\n";
-      //DG->dumpToDot(F.getName().str() + "_deps.dot");
-      //DG->dumpInstructionInfo();
+      errs() << "\tPrinting CFG to " << F.getName().str() + "_cfg.dot\n";
+      CFG->dumpToDot(F.getName().str() + "_cfg.dot");
+
+      errs() << "\tPrinting DepGraph to " << F.getName().str() + "_deps.dot\n";
+      DG->dumpToDot(F.getName().str() + "_deps.dot");
+      DG->dumpInstructionInfo();
       /*
       // Remove possible false positives
       
@@ -280,75 +291,94 @@ namespace {
     }
 
     bool isSafe(Instruction* I) {
-      Value* operand = I->getOperand(isa<StoreInst>(I) ? 1 : 0);
-      Type* type = operand->getType();
-
-      for(Type* subType : type->subtypes()){
-        if(subType->isPointerTy() || subType->isArrayTy()){
+      for(Type* subType : I->getOperand(isa<StoreInst>(I) ? 1 : 0)->getType()->subtypes()){
+        if(!isSafe(subType))
           return false;
-        }
       }
-
       return true;
     }
 
+    bool isSafe(Type* type){
+      return !type->isPointerTy() && !type->isArrayTy();
+    }
+
     void recursiveDepFinder(){
-      // errs() << "recursiveDepFinder\n";
+      errs() << "recursiveDepFinder\n";
       vector<Instruction*>* checkedInstructions = new vector<Instruction*>();
       for(auto edge: CFG->getInEdges(CFG->getExit())){
         recursiveDepFinderHelper1(checkedInstructions, edge->getSrc()->getItem());
       }
     }
 
-    bool recursiveDepFinderHelper1(vector<Instruction*>* checkedInstructions, Instruction* I){
-      // errs() << "Checking dependencies for " << CFG->getNodeIndex(I) << "\n";
+    void recursiveDepFinderHelper1(vector<Instruction*>* checkedInstructions, Instruction* I){
+      errs() << "Checking dependencies for " << CFG->getNodeIndex(I) << "\n";
       checkedInstructions->push_back(I);
       for(auto edge: CFG->getInEdges(I)){
-        recursiveDepFinderHelper2(new vector<Instruction*>(), I, edge->getSrc()->getItem());
+        if(isa<StoreInst>(I) || isa<LoadInst>(I)){
+          recursiveDepFinderHelper2(new vector<Instruction*>(), I, edge->getSrc()->getItem());
+        }
         if(find(checkedInstructions->begin(), checkedInstructions->end(), edge->getSrc()->getItem()) == checkedInstructions->end()){
           recursiveDepFinderHelper1(checkedInstructions, edge->getSrc()->getItem());
+        }else{
+          errs() << "\tAlready checked " << CFG->getNodeIndex(edge->getSrc()->getItem()) << "\n";
         }
       }
     }
 
     void recursiveDepFinderHelper2(vector<Instruction*>* checkedInstructions, Instruction* I, Instruction* C){
       checkedInstructions->push_back(C);
+      errs() << "\t" <<  CFG->getNodeIndex(C) <<": ";
       if(CFG->getNode(C) == CFG->getEntry()){
+        errs() << "A\n";
         return;
       }
-      
-      
       string varNameSrc = I->getOperand(isa<StoreInst>(I) ? 1 : 0)->getName().str();
-      string varNameDst = C->getOperand(isa<StoreInst>(C) ? 1 : 0)->getName().str();
-      if((isa<StoreInst>(I) || isa<StoreInst>(C)) && varNameSrc == varNameDst){
-        if(auto D = DI->depends(C, I, true)){
-          // errs() << "\t" <<  CFG->getNodeIndex(C) <<": ";
-          if (D->isOutput())
-          {
-              DG->addEdge(I, C, EdgeDepType::WAW);
-              // errs() << "WAW";
-          }
-          else if (D->isFlow())
-          {
-              DG->addEdge(I, C, EdgeDepType::RAW);
-              // errs() << "RAW";
-          }
-          else if (D->isAnti())
-          {
-              DG->addEdge(I, C, EdgeDepType::WAR);
-              // errs() << "WAR";
-          }else{
-            // errs() << "RAR\n";
-            goto next;
-          }
-          if(
-            (LI->getLoopFor((*C).getParent()) || LI->getLoopFor((*I).getParent()))
-              && (*C).getParent() != (*I).getParent()
-          ){
-            // errs() << " (boundary dep)" ;
-          }
-          // errs() << "\n";
+      if (DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(C)) {
+        if(DbgDeclare->getAddress()->getName().str() == varNameSrc){
+          errs() << "B\n";
+          return;
         }
+      }else if (DbgValueInst* DbgValue = dyn_cast<DbgValueInst>(C)) {
+        if(DbgValue->getValue()->getName().str() == varNameSrc){
+          errs() << "B\n";
+          return;
+        }
+      }
+
+      if(varNameSrc != C->getOperand(isa<StoreInst>(C) ? 1 : 0)->getName().str()){
+        errs() << "C\n";
+        goto next;
+      }
+    
+      if(auto D = DI->depends(C, I, true)){
+        if (D->isOutput())
+        {
+            DG->addEdge(I, C, EdgeDepType::WAW);
+            errs() << "WAW\n";
+            return;
+        }
+        else if (D->isFlow())
+        {
+            DG->addEdge(I, C, EdgeDepType::RAW);
+            errs() << "RAW\n";
+            return;
+        }
+        else if (D->isAnti())
+        {
+            DG->addEdge(I, C, EdgeDepType::WAR);
+            errs() << "WAR\n";
+            return;
+        }else{
+          errs() << "RAR\n";
+          goto next;
+        }
+        if(
+          (LI->getLoopFor((*C).getParent()) || LI->getLoopFor((*I).getParent()))
+            && (*C).getParent() != (*I).getParent()
+        ){
+          // errs() << " (boundary dep)" ;
+        }
+        // errs() << "\n";
       }
       next:;
       
