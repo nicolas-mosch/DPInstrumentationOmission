@@ -224,7 +224,7 @@ namespace {
         if(node != DG->getEntry() && node != DG->getExit()){
           isWrite = isa<StoreInst>(node->getItem());
           varName = node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str();
-          if(declareMap.count(varName) > 0 && !declareMap[varName]/* || varName == "retval"*/){
+          if(declareMap.count(varName) > 0 && !declareMap[varName] || varName == "retval"){
             CFG->getNode(node->getItem())->highlight();
             node->highlight();
             DebugLoc dl = node->getItem()->getDebugLoc();
