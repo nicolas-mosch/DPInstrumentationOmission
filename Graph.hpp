@@ -13,12 +13,15 @@
 #include <algorithm>
 #include <iterator>
 
+#include "llvm/Support/raw_ostream.h"
+
 template<typename NodeT>
 class Node
 {
 private:
 	NodeT item;
 	bool highlighted;
+	std::string label;
 public:
 	Node(NodeT _item) 
 		: item(_item)
@@ -41,40 +44,30 @@ private:
 	Node<NodeT> *src;
 	Node<NodeT> *dst;
 	EdgeT type;
-	int intensity;
-	std::string label;
-	bool direction;
 
 public:
 	Edge(Node<NodeT> *_src, Node<NodeT> *_dst, EdgeT _type, std::string _label, bool _direction)
 		: src(_src)
 		, dst(_dst)
 		, type(_type)
-		, intensity(1) 
-		, label(_label)
-		, direction(_direction)
 		{}
 	Edge(Node<NodeT> *_src, Node<NodeT> *_dst, EdgeT _type)
 		: src(_src)
 		, dst(_dst)
 		, type(_type)
-		, intensity(1) 
 		{}
 	~Edge() {};
 
 	Node<NodeT> *getSrc() const { return src; }
 	Node<NodeT> *getDst() const { return dst; }
-	std::string getLabel() { return label + (direction ? " : b" : " : f"); }
-	bool getDirection() { return direction; }
 	EdgeT getType() const { return type; }
 	EdgeT operator+(Edge<NodeT, EdgeT> &other)
 	{
 		return this->type + other.type;
 	}
-	void addIntensity() { intensity++; }
-	int getIntensity() { return intensity; }
 };
 
+using namespace std;
 template<typename NodeT, typename EdgeT>
 class Graph
 {
@@ -88,43 +81,22 @@ private:
 	std::map<Node<NodeT>*, std::set<Edge<NodeT, EdgeT>*> > outEdges;
 	//This map stores all the incoming edges to node of type T
 	std::map<Node<NodeT>*, std::set<Edge<NodeT, EdgeT>*> > inEdges;
-	bool stronglyConnected=true;
-  int nVisited;
 
-	bool nodeReachesEveryNode(Node<NodeT> *node)
+	void DFSUtil(NodeT n, NodeT search, vector<NodeT> currentPath, set<vector<NodeT>> &paths) 
 	{
-    nVisited = 0;
-		std::map<const Node<NodeT> *, bool> visited;
-		for (const auto n : nodesList)
-			visited[n] = false;
-		visit(node, visited);
-    return (visited.size() == nVisited);
-/*		for (const auto v : visited)
-		{
-			if (v.second == false)
-			{
-				return false;				
+		currentPath.push_back(n);
+		
+		if(n == search){
+			paths.insert(currentPath);
+			return;
+		}
+
+		for (Edge<NodeT, EdgeT> *e : getOutEdges(n)){
+			NodeT dst = e->getDst()->getItem();
+			if(find(currentPath.begin(), currentPath.end(), dst) == currentPath.end()){
+				DFSUtil(dst, search, currentPath, paths);
 			}
 		}
-
-		return true;*/
-	}
-
-	void visit(Node<NodeT> *node, std::map<const Node<NodeT>*, bool> &visited)
-	{
-		if (visited[node])
-      return;
-		visited[node] = true;
-    nVisited++;
-		for (const auto &e : getOutEdges(node)) {
-		  visit(e->getDst(), visited);
-		}
-	}
-
-	void updateStronglyConnectedStatus()
-	{
-		Node<NodeT> *node = nodesList.front();
-		stronglyConnected = nodeReachesEveryNode(node);
 	}
 
 public:
@@ -158,7 +130,6 @@ public:
 
 	Node<NodeT> *getNode(NodeT item)
 	{
-		auto pair_ = nodes.find(item);
 		if (nodes.count(item) == 0)
 			return addNode(item);
 		return nodes.find(item)->second.second;
@@ -209,19 +180,6 @@ public:
 		outEdges[src].insert(edge);
 		inEdges[dst].insert(edge);
 		edgesList.push_back(edge);
-		updateStronglyConnectedStatus();
-
-		return edge;
-	}
-
-	Edge<NodeT, EdgeT> *addEdge(Node<NodeT> *src, Node<NodeT> *dst, EdgeT e, std::string l, bool d)
-	{
-		Edge<NodeT, EdgeT> *edge = new Edge<NodeT, EdgeT>(src, dst, e, l, d);
-		outEdges[src].insert(edge);
-		inEdges[dst].insert(edge);
-		edgesList.push_back(edge);
-		updateStronglyConnectedStatus();
-
 		return edge;
 	}
 
@@ -231,14 +189,6 @@ public:
 		Node<NodeT> *dst_ = getNode(dst);
 
 		return addEdge(src_, dst_, e);
-	}
-
-	Edge<NodeT, EdgeT> *addEdge(NodeT src, NodeT dst, EdgeT e, std::string l, bool d)
-	{
-		Node<NodeT> *src_ = getNode(src);
-		Node<NodeT> *dst_ = getNode(dst);
-
-		return addEdge(src_, dst_, e, l, d);
 	}
 
 	std::set<Edge<NodeT, EdgeT>*> getInEdges(Node<NodeT> *node) 
@@ -270,30 +220,6 @@ public:
 		return getOutEdges(getNode(item));
 	}
 
-	Edge<NodeT, EdgeT> *checkEdge(NodeT src, NodeT dst, EdgeT type) const
-	{
-		for (auto e : edgesList)
-		{
-			if ((e->getSrc()->getItem() == src) 
-				&& (e->getDst()->getItem() == dst)
-				&& (e->getType() == type))
-				return e;
-		}
-		return nullptr;
-	}
-
-	Edge<NodeT, EdgeT> *checkEdge(Node<NodeT> *src, Node<NodeT> *dst, EdgeT type) const
-	{
-		for (auto e : edgesList)
-		{
-			if ((e->getSrc() == src) 
-				&& (e->getDst() == dst)
-				&& (e->getType() == type))
-				return e;
-		}
-		return nullptr;
-	}
-
 	void removeEdge(Edge<NodeT, EdgeT>* e)
 	{
 		auto out = e->getSrc();
@@ -308,210 +234,19 @@ public:
 		return edgesList;
 	}
 
-	bool isSubgraphOf(const Graph<NodeT, EdgeT> &supergraph) const
-	{
-		for (const auto &node : supergraph.getNodes())
-		{
-			if (nodesList.find(node) == nodesList.end())
-				return false;
-		}
-		for (const auto &edge : supergraph.getEdges())
-		{
-			if (edgesList.find(edge) == edgesList.end())
-				return false;
-		}
-		return true;
-	}
-
-	bool isStronglyConnected() const
-	{
-		return stronglyConnected;
-	}
-
 	int size() const { return nextIntKey; }
 
-	Graph<NodeT, EdgeT> *getSubgraphFromNode(Node<NodeT> *node)
-	{
-		Graph<NodeT, EdgeT> *subgraph = new Graph<NodeT, EdgeT>();
-
-		fillSubgraphFromNodeRecursively(node, *subgraph);
-
-		return subgraph;
+	set<vector<NodeT>> getPaths(Node<NodeT>* start, Node<NodeT>* end){
+		return getPaths(start->getItem(), end->getItem());
 	}
 
-	bool nodeReachesSCC(NodeT item)
-	{
-		if (getNodeIndex(item) != -1)
-		{
-			auto sccs = getStrongConnectedComponents();
-			std::set<Node<NodeT>* > visited;
-			visitNeighbors(getNode(item), &visited);
-			for (auto scc : sccs)
-				for (auto node : scc->getNodes())
-					for (auto v : visited)
-						if (v->getItem() == node->getItem())
-							return true;
-		}
+	set<vector<NodeT>> getPaths(NodeT start, NodeT end){
+		set<vector<NodeT>> paths;
+		vector<NodeT> path;
+		DFSUtil(start, end, path, paths);
 
-		return false;
+		return paths;
 	}
-
-	void visitNeighbors(Node<NodeT> *node, std::set<Node<NodeT>*> *visited)
-	{
-		if (visited->find(node) != visited->end())
-		{
-			visited->insert(node);
-			for (auto e : outEdges[node])
-			{
-				visitNeighbors(e->getDst(), visited);
-			}
-		}
-	}
-
-	void fillSubgraphFromNodeRecursively(Node<NodeT> *node, 
-		Graph<NodeT, EdgeT> &subgraph)
-	{
-		std::vector<Node<NodeT>* > nodes(std::begin(subgraph.getNodes()), std::end(subgraph.getNodes()));
-		if (std::find(nodes.begin(), nodes.end(), node) != nodes.end())
-		{
-			subgraph.addNode(node->getItem());
-			// for (auto e : this->outEdges[node])
-			// {
-			// 	subgraph.addEdge(e->getSrc(), e->getDst(), e->getType());
-			// }
-			fillSubgraphFromNodeRecursively(node, subgraph);			
-		}
-	}
-
-	std::set<Graph<NodeT, EdgeT>* > getStrongConnectedComponents()
-	{
-		// This map stores the INDEX and the LOWLINK for each node.
-	  //->first : index
-	  //->second : lowlink
-	  std::map<Node<NodeT> *, std::pair<int, int> > indexLowLink;
-
-	  // This set stores nodes that are in the set
-	  std::map<Node<NodeT> *, bool> onStack;
-
-	  // Stack that stores nodes in each visit.
-	  std::stack<Node<NodeT> *> stack;
-
-	  // Here we'll store the strong connected components
-	  std::set<std::set<Node<NodeT> *> > SCCs;
-
-	  int maxIndex = 0;
-	  
-	  // Initialize all indexes and lowlinks on -1;
-	  for (auto &node : nodesList)
-	  {
-	    indexLowLink.insert(std::pair<Node<NodeT> *, std::pair<int, int> >(
-	        (node), std::pair<int, int>(-1, -1)));
-	    onStack.insert(std::pair<Node<NodeT> *, bool>((node), false));
-	  }
-
-	  // call tarjan's algorithm for each node if node hasn't been visited yet
-	  for (auto &node: nodesList)
-	  {
-	    if (indexLowLink[(node)].first == -1)
-	    {
-	      maxIndex = tarjanVisit((node), &indexLowLink, &stack, &onStack, &SCCs,
-	                               maxIndex);
-	    }
-	  }
-
-	  //Run through the set of nodes for each SCC and build graphs
-	  std::set<Graph<NodeT, EdgeT>* > subgraphs;
-	  for (auto scc : SCCs)
-	  {
-	  	Graph<NodeT, EdgeT> *subgraph = new Graph<NodeT, EdgeT>();
-	  	subgraphs.insert(subgraph);
-	  	for (auto node : scc)
-	  	{
-	  		subgraph->addNode(node->getItem());
-	  		for (auto e : outEdges[node])
-	  		{
-	  			if (scc.find(e->getDst()) != scc.end())
-	  			{
-	  				subgraph->addEdge(e->getSrc()->getItem(), e->getDst()->getItem(), e->getType());
-	  			}
-	  		}
-	  	}
-	  }
-
-	  return subgraphs;
-	}
-
-	int tarjanVisit(Node<NodeT> *v,
-                       std::map<Node<NodeT> *, std::pair<int, int> > *indexLowLink,
-                       std::stack<Node<NodeT> *> *stack,
-                       std::map<Node<NodeT> *, bool> *onStack,
-                       std::set<std::set<Node<NodeT> *> > *SCCs, int index)
-	{
-	  int maxIndex;
-	  Node<NodeT> *w;
-
-	  // index
-	  (*indexLowLink)[v].first = index;
-	  // lowlink
-	  (*indexLowLink)[v].second = index;
-
-	  maxIndex = index + 1;
-	  stack->push(v);
-	  (*onStack)[v] = true;
-
-	  //get successors of node V
-	  std::set<Edge<NodeT, EdgeT> *> succs = outEdges[v];
-
-	  for (auto &succ : succs)
-	  {
-	      w = succ->getDst();
-	      if ((*indexLowLink)[w].first == -1)
-	      {
-	        maxIndex = tarjanVisit(w, indexLowLink, stack, onStack, SCCs, maxIndex);
-	        (*indexLowLink)[v].second =
-	            std::min((*indexLowLink)[v].second, (*indexLowLink)[w].second);
-	      }
-	      else if ((*onStack)[w])
-	      {
-	        (*indexLowLink)[v].second =
-	            std::min((*indexLowLink)[v].second, (*indexLowLink)[w].first);
-	      }
-	  }
-
-	  // if v is a root node, pop the stack and generate an SCC
-	  if ((*indexLowLink)[v].second == (*indexLowLink)[v].first)
-	  {
-	    std::set<Node<NodeT> *> newSCC;
-	    do
-	    {
-	      w = stack->top();
-	      stack->pop();
-	      (*onStack)[w] = false;
-	      newSCC.insert(w);
-	    } while (w != v);
-	    SCCs->insert(newSCC);
-	  }
-
-	  return maxIndex;
-	}
-
-	Graph<NodeT, EdgeT>* mergeWith(Graph<NodeT, EdgeT> *src)
-	{
-		Graph<NodeT, EdgeT> *dst = this;
-
-		for (auto n : src->getNodes())
-		{
-			dst->addNode(n->getItem());
-		}
-
-		for (auto e : src->getEdges())
-		{
-			dst->addEdge(e->getSrc()->getItem(), e->getDst()->getItem(), e->getType());
-		}
-
-		return this;
-	}
-
 };
 
 #endif // GRAPH_HPP

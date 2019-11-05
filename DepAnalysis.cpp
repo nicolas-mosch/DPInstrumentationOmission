@@ -30,8 +30,10 @@
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "PDG.h"
+#include "Graph.hpp"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/Analysis/CallGraph.h"
 
 #include "llvm/IR/IRBuilder.h"
 
@@ -64,6 +66,7 @@ namespace {
       AU.addRequired<DependenceAnalysisWrapperPass>();
       //AU.addRequired<DominanceFrontier>();
       AU.addRequired<LoopInfoWrapperPass>();
+      AU.addRequired<CallGraphWrapperPass>();
       //AU.addRequired<RegionInfoPass>();
     }
 
@@ -73,7 +76,7 @@ namespace {
         return false;
       }
       */
-      errs() << "\n---------- DepAnalysis on " << F.getName() << " ----------\n";
+      errs() << "\n---------- DepAnalysis on " << F.getName() << " (" << (isRecursive(&F)) << ") ----------\n";
 
       //LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
       //RegionInfo &RI = getAnalysis<RegionInfoPass>().getRegionInfo();
@@ -84,6 +87,11 @@ namespace {
       errs() << "\tBuilding DepGraph\n";
       DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
 	    LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+      /*
+      for(auto it = CG->begin(); it != CG->end(); ++it){
+        errs() << ((*it).first != nullptr ? (*it).first->getName() : "n\a") << "\n";
+      }
+      */
 
       DG = new PDG(F.getName(), &F);
 
@@ -91,7 +99,11 @@ namespace {
 	    string varNameSrc, varNameDst;
 
       CFG = new PDG(F.getName(), &F);
+
+      Graph<BasicBlock*, string> CFT;
       
+
+
       // Get declaration locs and add all store/load-instructions to graph
       vector<string> possibleFPVs;
       set<Value*> unsafeOperands;
@@ -104,7 +116,6 @@ namespace {
             Function* fn = call_inst->getCalledFunction();
             for(int i = 0; i < call_inst->getNumOperands() - 1; ++i){
               operand = call_inst->getArgOperand(i);
-              errs() << *(operand->getType()) << " " << operand->getName().str();
               if(!isSafe(operand->getType())){
                 unsafeOperands.insert(operand);
               }
@@ -117,25 +128,24 @@ namespace {
             }
           }
           if (DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(&*I)) {
-            //declareMap[DbgDeclare->getAddress()->getName().str()] = s;
             declareMap[DbgDeclare->getAddress()->getName().str()] = false;
             varName = DbgDeclare->getAddress()->getName().str();
           } else if (DbgValueInst* DbgValue = dyn_cast<DbgValueInst>(&*I)) {
-            //declareMap[DbgValue->getValue()->getName().str()] = s;
             varName = DbgValue->getValue()->getName().str();
           }else{
             continue;
           }
           CFG->addNode(&*I);
           declareMap[varName] = false;
-          // errs() << varName << ": " << dl.getLine() << "|" << dl.getCol() << "\n";
         }
       }
 
       std::function<void(BasicBlock*,Instruction*)> add_first_successor_store_load_instructions;
-      add_first_successor_store_load_instructions = [&](BasicBlock *BB, Instruction* previousInstruction) 
+      add_first_successor_store_load_instructions = [&](BasicBlock *BB, Instruction* previousInstruction)
       {
+        bool hasSuccessors = false;
         for (BasicBlock *S : successors(BB)) {
+          hasSuccessors = true;
           for (Instruction &I : *S){
             DebugLoc dl = I.getDebugLoc();
             if(!dl) continue;
@@ -147,14 +157,18 @@ namespace {
               goto next;
             }
           }
-          add_first_successor_store_load_instructions(S, previousInstruction);
+          if(S != BB) 
+            add_first_successor_store_load_instructions(S, previousInstruction);
           next:;
+        }
+        if(BB->getName().find("for.end") != string::npos && !hasSuccessors){
+          CFG->connectToExit(previousInstruction);
         }
       };
 
+      // Create Store/Load-CFG
       Instruction *previousInstruction;
       for (BasicBlock &BB : F){
-        // errs() << BB.getName() << "\n";
         // Add current block's store/load-instructions to graph
         previousInstruction = nullptr;
         for (Instruction &I : BB){
@@ -179,18 +193,7 @@ namespace {
         if(node != CFG->getEntry() && node != CFG->getExit()){
           if(CFG->getInEdges(node).empty()){
             CFG->connectToEntry(node->getItem());
-          }else if(
-            CFG->getInEdges(node).size() == 1
-            && node->getItem()->getParent()->getName().find("for.cond") != string::npos
-          ){
-            CFG->connectToExit(node->getItem());
-          }
-          else if(CFG->getOutEdges(node).empty()){
-            CFG->connectToExit(node->getItem());
-          }else if(
-            CFG->getOutEdges(node).size() == 1
-            && node->getItem()->getParent()->getName().find("for.inc") != string::npos
-          ){
+          }else if(CFG->getOutEdges(node).empty()){
             CFG->connectToExit(node->getItem());
           }
         }
@@ -205,13 +208,12 @@ namespace {
           if(unsafeOperands.find(node->getItem()->getOperand(isWrite ? 1 : 0)) != unsafeOperands.end()){
             declareMap[varName] = true;
           }
-          if(!isSafe(node->getItem())/* || isWrite*/){
+          if(!isSafe(node->getItem()) || isWrite){
             declareMap[varName] = true;
           }
           ++instrCount;
         }
       }
-
 
       ofstream stream;
       stream.open("ignoring_intructions.txt", ios_base::app);
@@ -224,7 +226,7 @@ namespace {
         if(node != DG->getEntry() && node != DG->getExit()){
           isWrite = isa<StoreInst>(node->getItem());
           varName = node->getItem()->getOperand(isWrite ? 1 : 0)->getName().str();
-          if(declareMap.count(varName) > 0 && !declareMap[varName] || varName == "retval"){
+          if(declareMap.count(varName) > 0 && !declareMap[varName] /*|| varName == "retval"*/){
             CFG->getNode(node->getItem())->highlight();
             node->highlight();
             DebugLoc dl = node->getItem()->getDebugLoc();
@@ -239,15 +241,6 @@ namespace {
           }
         }
       }
-      // errs() << "Instructions found for " << F.getName() << " (2): " << c << "\n";
-      // errs() << "possibleFPVs: [";
-      // for(string s : possibleFPVs){
-        // errs() << s << ", ";
-      // }
-
-      // errs() << "]\n";
-
-
 
       recursiveDepFinder();
 
@@ -257,36 +250,7 @@ namespace {
       errs() << "\tPrinting DepGraph to " << F.getName().str() + "_deps.dot\n";
       DG->dumpToDot(F.getName().str() + "_deps.dot");
       DG->dumpInstructionInfo();
-      /*
-      // Remove possible false positives
-      
-      Instruction *src, *dst;
-      for(auto edge : DG->getEdges()){
-        src = edge->getSrc()->getItem();
-        dst = edge->getDst()->getItem();
-        
-        if(src != nullptr){
-          auto *op = src->getOperand(isa<StoreInst>(src) ? 1 : 0);
 
-          if(
-              find(
-                possibleFPVs.begin(),
-                possibleFPVs.end(),
-                op->getName().str()
-              ) != possibleFPVs.end()
-              || isa<GlobalVariable>(*op)
-              || isa<GetElementPtrInst>(*op)
-           ){
-            //  errs() << "Removing edge " << DG->getNodeIndex(src) << " -> " << DG->getNodeIndex(src) << "\n";
-             DG->removeEdge(edge);
-          }
-        }
-      }
-      
-
-      DG->dumpToDot(F.getName().str() + "_deps2.dot");
-      */
-      // errs() << "done2\n";
       return false;
     }
 
@@ -303,7 +267,7 @@ namespace {
     }
 
     void recursiveDepFinder(){
-      errs() << "recursiveDepFinder\n";
+      // errs() << "recursiveDepFinder\n";
       vector<Instruction*>* checkedInstructions = new vector<Instruction*>();
       for(auto edge: CFG->getInEdges(CFG->getExit())){
         recursiveDepFinderHelper1(checkedInstructions, edge->getSrc()->getItem());
@@ -311,7 +275,7 @@ namespace {
     }
 
     void recursiveDepFinderHelper1(vector<Instruction*>* checkedInstructions, Instruction* I){
-      errs() << "Checking dependencies for " << CFG->getNodeIndex(I) << "\n";
+      // errs() << "Checking dependencies for " << CFG->getNodeIndex(I) << "\n";
       checkedInstructions->push_back(I);
       for(auto edge: CFG->getInEdges(I)){
         if(isa<StoreInst>(I) || isa<LoadInst>(I)){
@@ -320,33 +284,29 @@ namespace {
         if(find(checkedInstructions->begin(), checkedInstructions->end(), edge->getSrc()->getItem()) == checkedInstructions->end()){
           recursiveDepFinderHelper1(checkedInstructions, edge->getSrc()->getItem());
         }else{
-          errs() << "\tAlready checked " << CFG->getNodeIndex(edge->getSrc()->getItem()) << "\n";
+          ;// errs() << "\tAlready checked " << CFG->getNodeIndex(edge->getSrc()->getItem()) << "\n";
         }
       }
     }
 
     void recursiveDepFinderHelper2(vector<Instruction*>* checkedInstructions, Instruction* I, Instruction* C){
       checkedInstructions->push_back(C);
-      errs() << "\t" <<  CFG->getNodeIndex(C) <<": ";
+      // errs() << "\t" <<  CFG->getNodeIndex(C) <<": ";
       if(CFG->getNode(C) == CFG->getEntry()){
-        errs() << "A\n";
         return;
       }
       string varNameSrc = I->getOperand(isa<StoreInst>(I) ? 1 : 0)->getName().str();
       if (DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(C)) {
         if(DbgDeclare->getAddress()->getName().str() == varNameSrc){
-          errs() << "B\n";
           return;
         }
       }else if (DbgValueInst* DbgValue = dyn_cast<DbgValueInst>(C)) {
         if(DbgValue->getValue()->getName().str() == varNameSrc){
-          errs() << "B\n";
           return;
         }
       }
 
       if(varNameSrc != C->getOperand(isa<StoreInst>(C) ? 1 : 0)->getName().str()){
-        errs() << "C\n";
         goto next;
       }
     
@@ -387,6 +347,24 @@ namespace {
           recursiveDepFinderHelper2(checkedInstructions, I, edge->getSrc()->getItem());
         }
       }
+    }
+
+    bool isRecursive(Function* F){
+      CallGraph *CG = &getAnalysis<CallGraphWrapperPass>().getCallGraph();
+      const CallGraphNode *root = (*CG)[F];
+      return isRecursiveHelper(root, F, CG, new set<Function*>());
+    }
+
+    bool isRecursiveHelper(const CallGraphNode* n, Function* F, const CallGraph *CG, set<Function*> *checkedFunctions){
+      checkedFunctions->insert(n->getFunction());
+      for(auto cgn : *n){
+        if(cgn.second->getFunction() == F){
+          return true;
+        }
+        if(checkedFunctions->find(cgn.second->getFunction()) == checkedFunctions->end())
+          return isRecursiveHelper(cgn.second, F, CG, checkedFunctions);
+      }
+      return false;
     }
   };
 }

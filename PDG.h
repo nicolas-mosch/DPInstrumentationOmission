@@ -38,8 +38,6 @@
 
 using namespace llvm;
 using namespace std;
-using PDE = Edge<Instruction*, EdgeDepType>;
-using PDN = Node<Instruction*>;
 
 class PDG : public Graph<Instruction*, EdgeDepType>
 {
@@ -80,14 +78,7 @@ public:
 	void connectToExit(Instruction* inst);
 	Node<Instruction*> *getEntry() { return entry; }
 	Node<Instruction*> *getExit() { return exit; }
-	std::set<Graph<Instruction*, EdgeDepType>* > getStronglyConnectedSubgraphs();
 	map<string, set<string>> getDPDepMap();
-	
-private:
-	bool isTransitive(PDE* edge);
-	bool hasPathTo(PDN* src, PDN* dst);
-	map<PDN*, map<PDN*, int>> distanceMap;
-	void setShortestDistances();
 };
 
 #endif // PDG_H

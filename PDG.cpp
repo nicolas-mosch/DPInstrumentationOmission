@@ -14,9 +14,6 @@
 static cl::opt<bool, false> removeTransitiveDeps("removeTransitiveDeps", cl::desc("Remove transitive dependencies"), cl::NotHidden);
 static cl::opt<string> fmap("fmap", cl::desc("DP-FileMapping filename"), cl::value_desc("filename"));
 
-STATISTIC(noDepInstrCount, "Free Store/Load Instructions");
-STATISTIC(instrCount, "Total Store/Load Instructions");
-
 string PDG::edgeLabel(Edge<Instruction*, EdgeDepType> *e)
 {
 	switch (e->getType())
@@ -47,7 +44,6 @@ void PDG::dumpToDot(){
 void PDG::dumpToDot(std::string graphName)
 {
 	
-	// errs() << "Generating DOT file for " << functionName << "\n";
 	// Write the graph to a DOT file
 	ofstream dotStream;
 	dotStream.open(graphName);
@@ -75,12 +71,12 @@ void PDG::dumpToDot(std::string graphName)
 					bool isRead = isa<LoadInst>(I);
 					dotStream << "\t\"" << 
 					getNodeIndex(node) 
-					<< "\" [label=\"" << getNodeIndex(node) << "\\n"
+					<< "\" [label=\""/* << getNodeIndex(node) << "\\n"*/
 					//<< getNodeIndex(node) 
 					<< (isWrite ? "write" : (isRead ? "read" : "?")) << "("
 					<< I->getOperand(isWrite ? 1 : 0)->getName().str()
 					<< "): " <<  (dl ? to_string(dl.getLine()) : "") << (dl ? "," : "") << (dl ? to_string(dl.getCol()) : "")
-					<< "\"" << (node->isHighlighted() ? ",style=filled,fillcolor=gray": "")
+					<< "\"" << (node->isHighlighted() ? ",style=filled,fillcolor=red": "")
 					<< "];\n";
 				}else if(DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(I)){
 					dotStream << "\t\"" << 
@@ -109,7 +105,7 @@ void PDG::dumpToDot(std::string graphName)
 					dotStream << "\t\""
 						<< getNodeIndex(e->getSrc()) 
 						<< "\" -> \"" << getNodeIndex(e->getDst()) 
-						<< "\" [label=\"" << edgeLabel(e) << "\"];\n"
+						<< "\" [label=\"" /*<< edgeLabel(e)*/ << "\"];\n"
 					;	
 			}else if(e->getType() == EdgeDepType::CTR){
 				dotStream << "\t\"" 
@@ -139,7 +135,6 @@ void PDG::dumpInstructionInfo(){
 		errs() << "Problem opening DOT file: " << functionName << "_instructions.txt\n";
 		return;
 	}
-	int c = 0;
 	for (auto node : getNodes())
 	{
 		if(node != entry && node != exit && getInEdges(node).empty() && getOutEdges(node).empty()){
@@ -153,13 +148,9 @@ void PDG::dumpInstructionInfo(){
 					<< "|" << dl.getCol()
 					<< "\n"
 				;
-				++noDepInstrCount;
-				++c;
 			}
 		}
-		++instrCount;
 	}
-	errs() << "Instructions found for " << functionName << ": " << c << "\n";
 	stream.close();
 }
 
@@ -174,19 +165,6 @@ void PDG::connectToExit(Instruction* inst)
 	auto n = getNode(inst);
 	addEdge(n, exit, EdgeDepType::CTR);
 }
-
-set<Graph<Instruction*, EdgeDepType>* > 
-PDG::getStronglyConnectedSubgraphs()
-{
-	if (scSubgraphs.empty())
-	{
-		scSubgraphs = getStrongConnectedComponents();
-	}
-	return scSubgraphs;
-}
-
-
-
 
 map<string, set<string>> PDG::getDPDepMap(){
 	map<string, string> filemap;
@@ -272,7 +250,7 @@ map<string, set<string>> PDG::getDPDepMap(){
 		}
 		skip:;
 	}
-	
+
 	return depMap;
 }
 
