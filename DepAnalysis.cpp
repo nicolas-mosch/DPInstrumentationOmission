@@ -29,18 +29,16 @@
 #include "llvm/Analysis/DominanceFrontier.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/DebugInfoMetadata.h"
-#include "PDG.h"
-#include "Graph.hpp"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/DebugLoc.h"
-
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IRBuilder.h"
 
 #include <fstream>
-// #include "llvm/ADT/Statistic.h"
-// #include "llvm/Analysis/MemorySSA.h"
-// #include "llvm/Analysis/DependenceAnalysis.h"
-// #include "llvm/IR/InstIterator.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/MemorySSA.h"
+#include "llvm/Analysis/DependenceAnalysis.h"
+#include "llvm/IR/InstIterator.h"
 #define DEBUG_TYPE "dep-analysis"
 
 using namespace std;
@@ -52,20 +50,15 @@ STATISTIC(omittableInstrCount, "Disregardable Store/Load Instructions");
 namespace {
   struct DepAnalysis : public FunctionPass {
     static char ID;
-    DependenceInfo *DI;
-    LoopInfo *LI;
-    PDG *DG, *CFG;
 
     DepAnalysis() : FunctionPass(ID) {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesAll();
       
-      //AU.addRequired<PostDominatorTree>();
-      AU.addRequired<DependenceAnalysisWrapperPass>();
-      //AU.addRequired<DominanceFrontier>();
-      AU.addRequired<LoopInfoWrapperPass>();
-      //AU.addRequired<RegionInfoPass>();
+      // AU.addRequired<PostDominatorTree>();
+      // AU.addRequired<DominanceFrontier>();
+      AU.addRequired<RegionInfoPass>();
     }
 
     bool runOnFunction(Function &F) {
@@ -98,6 +91,14 @@ namespace {
           ++totalInstrCount;
           dl = I->getDebugLoc();
           Value *v = I->getOperand(isa<StoreInst>(&*I) ? 1 : 0);
+          
+          errs() << "\t" << (isa<StoreInst>(&*I) ? "Write " : "Read ") << getVarName(&*I) << " | ";
+          if(dl = I->getDebugLoc()){
+            errs() << dl.getLine() << "," << dl.getCol() << " | " << I->getName();
+          }else{
+            errs() << "INIT";
+          }
+
           if(
             !dl 
             || (
@@ -107,56 +108,35 @@ namespace {
             // || v->getName() == "retval"
           ){
             omittableInstructions.insert(&*I);
+            errs() << " | (OMIT)";
           }
+
+          errs() << "\n";
         }
       }
     
       omittableInstrCount += omittableInstructions.size();
 
-
-      ofstream stream;
-      stream.open("ignoring_intructions.txt", ios_base::app);
-      if (stream.is_open())
-      {
-        errs() << "Omittable Instructions:\n";
-        for(auto I : omittableInstructions){
-          errs() << "\t" << (isa<StoreInst>(I) ? "Write " : "Read ") << getVarName(&*I) << " | ";
-          if(dl = I->getDebugLoc()){
-            errs() << dl.getLine() << "," << dl.getCol() << " | " << I->getName() << "\n";
-          }else{
-            errs() << "INIT\n";
-          }
-          stream
-              << (isWrite ? "w" : "r")
-              << "|" << I->getOperand(isWrite ? 1 : 0)->getName().str()
-              << "|" << dl.getLine()
-              << "|" << dl.getCol()
-              << "\n"
-            ;
+      /*
+      errs() << "Omittable Instructions:\n";
+      for(auto I : omittableInstructions){
+        errs() << "\t" << (isa<StoreInst>(I) ? "Write " : "Read ") << getVarName(&*I) << " | ";
+        if(dl = I->getDebugLoc()){
+          errs() << dl.getLine() << "," << dl.getCol() << " | " << I->getName() << "\n";
+        }else{
+          errs() << "INIT\n";
         }
-      }else{
-        errs() << "Problem opening file: ignoring_intructions.txt\n";
       }
+      */
+      
 
       return false;
     }
 
     
     string getVarName(Instruction *I){
-      /*
       if(isa<AllocaInst>(I)){
-        Instruction *K = I->getNextNonDebugInstruction();
-        while(K = K->getNextNonDebugInstruction()){
-          if(isa<StoreInst>(K) && ((Instruction*)K->getOperand(1)) == I){
-            return K->getOperand(0)->getName();
-          }
-        }
-        return "n/a";
-      }*/
-      
-      if(isa<StoreInst>(I) || isa<LoadInst>(I)){
-        string r;
-        Value *v = I->getOperand(isa<StoreInst>(I) ? 1 : 0);
+        Value *v = (Value*)I;
         if(v->hasName()){
           string r = v->getName().str();
           std::size_t found = r.find(".addr");
@@ -164,6 +144,23 @@ namespace {
             return r.erase(found);
           }
           return r;
+        }
+        return "!";
+      }
+
+      if(isa<GetElementPtrInst>(I)){
+        return getVarName((Instruction*)I->getOperand(0)) + "[" + getVarName((Instruction*)I->getOperand(1)) + "]";
+      }
+
+      if(isa<SExtInst>(I)){
+        return getVarName((Instruction*)I->getOperand(0));
+      }
+      
+      if(isa<StoreInst>(I) || isa<LoadInst>(I)){
+        string r;
+        Value *v = I->getOperand(isa<StoreInst>(I) ? 1 : 0);
+        if(v->hasName()){
+         return getVarName((Instruction*)v);
         }else{
           return "*" + getVarName((Instruction*)v);
         }
@@ -195,5 +192,8 @@ namespace {
 
 char DepAnalysis::ID = 0;
 
+// INITIALIZE_PASS(DepAnalysis, "DepAnalysis", "BATMAN", false, false)
 static RegisterPass<DepAnalysis> X("dep-analysis", "Run the DepAnalysis algorithm. Generates a dependence graph", false, false);
 //static cl::opt<bool, false> printToDot("printToDot", cl::desc("Print dot file containing the depgraph"), cl::NotHidden);
+
+// INITIALIZE_PASS(DepAnalysis, "dep-analysis", "Find omittable instructions",  false, false)
