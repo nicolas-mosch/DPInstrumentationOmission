@@ -98,7 +98,7 @@ namespace {
           }else{
             errs() << "INIT";
           }
-
+          
           if(
             !dl 
             || (
@@ -111,7 +111,7 @@ namespace {
             errs() << " | (OMIT)";
           }
 
-          errs() << "\n";
+          errs() << "\t" << *I << "\n";
         }
       }
     
@@ -135,6 +135,8 @@ namespace {
 
     
     string getVarName(Instruction *I){
+      // errs() << "\tgetVarName: " << *I << "\n";
+
       if(isa<AllocaInst>(I)){
         Value *v = (Value*)I;
         if(v->hasName()){
@@ -149,7 +151,13 @@ namespace {
       }
 
       if(isa<GetElementPtrInst>(I)){
-        return getVarName((Instruction*)I->getOperand(0)) + "[" + getVarName((Instruction*)I->getOperand(1)) + "]";
+        string r = getVarName((Instruction*)I->getOperand(0));
+        for(int i = 1; i < I->getNumOperands(); ++i){
+          if(isa<Instruction>(I->getOperand(i))){
+            r += "[" + getVarName((Instruction*)I->getOperand(i)) + "]";
+          }
+        }
+        return r;
       }
 
       if(isa<SExtInst>(I)){
