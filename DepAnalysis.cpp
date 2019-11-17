@@ -50,10 +50,31 @@ STATISTIC(instrCount, "Total Store/Load Instructions");
 STATISTIC(iinstrCount, "Disregardable Store/Load Instructions");
 
 namespace {
+  string edgeLabel(Edge<Instruction*, EdgeDepType> *e)
+{
+	switch (e->getType())
+	{
+		case EdgeDepType::RAR: return "RAR";
+		case EdgeDepType::RAWLC: return "RAW*";
+		case EdgeDepType::WAW: return "WAW";
+		case EdgeDepType::RAW: return "RAW";
+		case EdgeDepType::WAR: return "WAR";
+		case EdgeDepType::CTR: return "CTR";
+		case EdgeDepType::PARENT: return "PARENT";
+		case EdgeDepType::SCA:
+		{
+			if (e->getSrc()->getItem()->hasName())
+				return e->getSrc()->getItem()->getName();
+			else
+				return "SCA";
+		}
+		default: return std::to_string(e->getType());
+	}
+}
+
   struct DepAnalysis : public FunctionPass {
     static char ID;
     DependenceInfo *DI;
-    LoopInfo *LI;
     PDG *DG, *CFG;
 
     DepAnalysis() : FunctionPass(ID) {}
@@ -64,8 +85,7 @@ namespace {
       AU.addRequired<DominatorTreeWrapperPass>();
       AU.addRequired<PostDominatorTreeWrapperPass>();
       AU.addRequired<DependenceAnalysisWrapperPass>();
-      //AU.addRequired<DominanceFrontier>();
-      AU.addRequired<LoopInfoWrapperPass>();
+      AU.addRequired<DominatorTreeWrapperPass>();
       AU.addRequired<CallGraphWrapperPass>();
       //AU.addRequired<RegionInfoPass>();
     }
@@ -97,7 +117,7 @@ namespace {
       // Remove values passed outside by reference from localValues
       for (inst_iterator I = inst_begin(F), SrcE = inst_end(F); I != SrcE; ++I) {
         if(CallInst* call_inst = dyn_cast<CallInst>(&*I)){
-          for(int i = 0; i < call_inst->getNumOperands() - 1; ++i){
+          for(uint i = 0; i < call_inst->getNumOperands() - 1; ++i){
             v = call_inst->getArgOperand(i);
             localValues.erase(v);
           }
@@ -126,7 +146,6 @@ namespace {
 
       errs() << "\tBuilding DepGraph\n";
       DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
-	    LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
       DominatorTree& DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
       PostDominatorTree& PDT = getAnalysis<PostDominatorTreeWrapperPass>().getPostDomTree();
       DG = new PDG(F.getName(), &F);
@@ -146,7 +165,7 @@ namespace {
               if(isa<StoreInst>(I) || isa<LoadInst>(I)){
                 CFG->addEdge(previousInstruction, &I, EdgeDepType::CTR);
                 goto next;
-              }else if(DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(&I)){
+              }else if(isa<DbgDeclareInst>(&I)){
                 CFG->addEdge(previousInstruction, &I, EdgeDepType::CTR);
                 goto next;
               }
@@ -161,7 +180,7 @@ namespace {
         };
         Instruction *previousInstruction;
         for (BasicBlock &BB : F){
-          // Add current block's store/load-instructions to graph
+          // Add current block's store/load-instructions and declarations to graph
           previousInstruction = nullptr;
           for (Instruction &I : BB){
             dl = I.getDebugLoc();
@@ -193,53 +212,86 @@ namespace {
 
       recursiveDepFinder();
       Instruction *I, *J;
-      
+      set<string> tmpDeps, conditionalDeps;
+      map<BasicBlock*, set<string>> conditionalDepMap;
       for(auto node : DG->getNodes()){
         if(node != DG->getEntry() && node != DG->getExit()){
           I = node->getItem();
           bool dom = true;
+          tmpDeps.clear();
           for(auto edge: DG->getOutEdges(node)){
             J = edge->getDst()->getItem();
-            if(!DT.dominates(J, I) || !PDT.dominates(I, J)){
-              dom = false; break;
+            if(I->getParent() == J->getParent()){
+              for(auto &K: *I->getParent()){
+                if(&K == I) goto next;
+                if(&K == J) break;
+              }
             }
+            if(!PDT.dominates(I->getParent(), J->getParent())) goto next;
+            tmpDeps.insert(
+              to_string(I->getDebugLoc().getLine())
+              + " NOM  " 
+              + edgeLabel(edge) + " "
+              + to_string(J->getDebugLoc().getLine()) + "|"
+              + getVarName(I)
+            );
           }
           for(auto edge: DG->getInEdges(node)){
             J = edge->getSrc()->getItem();
-            if(!DT.dominates(I, J) || !PDT.dominates(J, I)){
-              dom = false; break;
+            if(I->getParent() == J->getParent()){  
+              for(auto &K: *I->getParent()){
+                if(&K == J) goto next;
+                if(&K == I) break;
+              }
             }
+            if(!PDT.dominates(J->getParent(), I->getParent())) goto next;
+            tmpDeps.insert(
+              to_string(J->getDebugLoc().getLine())
+              + " NOM  " 
+              + edgeLabel(edge) + " "
+              + to_string(I->getDebugLoc().getLine()) + "|"
+              + getVarName(I)
+            );
           }
+          if(!dom) continue;
           v = I->getOperand(isa<StoreInst>(&*I) ? 1 : 0);
-          if(dom && localValues.find(v) != localValues.end()){
+          if(localValues.find(v) != localValues.end()){
             omittableInstructions.insert(I);
+            conditionalDepMap[I->getParent()].insert(tmpDeps.begin(), tmpDeps.end());
           }
+          next:;
         }
       }
-
+      
+      errs() << "Load/Store Instructions:\n";
       iinstrCount += omittableInstructions.size();
       for (inst_iterator I = inst_begin(F), SrcE = inst_end(F); I != SrcE; ++I) {
         if(isa<StoreInst>(&*I) || isa<LoadInst>(&*I)){
           ++instrCount;
           errs() << "\t" << (isa<StoreInst>(&*I) ? "Write " : "Read ") << getVarName(&*I) << " | ";
-          if(dl = I->getDebugLoc()){
-            errs() << dl.getLine() << "," << dl.getCol();
-          }else{
-            errs() << "INIT";
-          }
+          if(dl = I->getDebugLoc()) errs() << dl.getLine() << "," << dl.getCol();
+          else errs() << "INIT";
           if(omittableInstructions.find(&*I) != omittableInstructions.end()){
             CFG->getNode(&*I)->highlight();
             DG->getNode(&*I)->highlight();
             errs() << " | (OMIT)";
           }
-          errs() << "\t" << *I << "\n";
+          errs() << "\n";
         }
       }
 
-      errs() << "\tPrinting CFG to " << F.getName().str() + "_cfg.dot\n";
+      errs() << "Conditional Dependences:\n";
+      for(auto pair : conditionalDepMap){
+        errs() << pair.first->getName() << ":\n";
+        for(auto s: pair.second){
+          errs() << "\t" << s << "\n";
+        }
+      }
+
+      errs() << "Printing CFG to " << F.getName().str() + "_cfg.dot\n";
       CFG->dumpToDot(F.getName().str() + "_cfg.dot");
 
-      errs() << "\tPrinting DepGraph to " << F.getName().str() + "_deps.dot\n";
+      errs() << "Printing DepGraph to " << F.getName().str() + "_deps.dot\n";
       DG->dumpToDot(F.getName().str() + "_deps.dot");
       DG->dumpInstructionInfo();
 
@@ -284,10 +336,12 @@ namespace {
           return;
         }
       }
-
+      
+      /*
       if(I->getOperand(isa<StoreInst>(I) ? 1 : 0) != C->getOperand(isa<StoreInst>(C) ? 1 : 0)){
         goto next;
       }
+      */
     
       if(auto D = DI->depends(C, I, true)){
         if (D->isOutput())
@@ -311,13 +365,6 @@ namespace {
           // errs() << "RAR\n";
           goto next;
         }
-        if(
-          (LI->getLoopFor((*C).getParent()) || LI->getLoopFor((*I).getParent()))
-            && (*C).getParent() != (*I).getParent()
-        ){
-          // errs() << " (boundary dep)" ;
-        }
-        // errs() << "\n";
       }
       next:;
       
@@ -364,7 +411,7 @@ namespace {
 
       if(isa<GetElementPtrInst>(I)){
         string r = getVarName((Instruction*)I->getOperand(0));
-        for(int i = 1; i < I->getNumOperands(); ++i){
+        for(uint i = 1; i < I->getNumOperands(); ++i){
           if(isa<Instruction>(I->getOperand(i))){
             r += "[" + getVarName((Instruction*)I->getOperand(i)) + "]";
           }
