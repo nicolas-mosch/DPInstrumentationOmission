@@ -212,22 +212,19 @@ namespace {
 
       recursiveDepFinder();
       Instruction *I, *J;
-      set<string> tmpDeps, conditionalDeps;
+      
       map<BasicBlock*, set<string>> conditionalDepMap;
       for(auto node : DG->getNodes()){
         if(node != DG->getEntry() && node != DG->getExit()){
           I = node->getItem();
-          bool dom = true;
-          tmpDeps.clear();
+          set<string> tmpDeps;
           for(auto edge: DG->getOutEdges(node)){
             J = edge->getDst()->getItem();
-            if(I->getParent() == J->getParent()){
-              for(auto &K: *I->getParent()){
-                if(&K == I) goto next;
-                if(&K == J) break;
-              }
+            if(I == J || !DT.dominates(J, I)){
+              errs () << "Can't omit " << CFG->getNodeIndex(I) << ": !dominates("
+                      << CFG->getNodeIndex(J) << ", " << CFG->getNodeIndex(I) << ")\n";
+              goto next;
             }
-            if(!PDT.dominates(I->getParent(), J->getParent())) goto next;
             tmpDeps.insert(
               to_string(I->getDebugLoc().getLine())
               + " NOM  " 
@@ -238,13 +235,11 @@ namespace {
           }
           for(auto edge: DG->getInEdges(node)){
             J = edge->getSrc()->getItem();
-            if(I->getParent() == J->getParent()){  
-              for(auto &K: *I->getParent()){
-                if(&K == J) goto next;
-                if(&K == I) break;
-              }
+            if(I == J || !DT.dominates(I, J)) {
+              errs () << "Can't omit " << CFG->getNodeIndex(I) << ": !dominates("
+                      << CFG->getNodeIndex(I) << ", " << CFG->getNodeIndex(J) << ")\n";
+              goto next;
             }
-            if(!PDT.dominates(J->getParent(), I->getParent())) goto next;
             tmpDeps.insert(
               to_string(J->getDebugLoc().getLine())
               + " NOM  " 
@@ -253,11 +248,13 @@ namespace {
               + getVarName(I)
             );
           }
-          if(!dom) continue;
           v = I->getOperand(isa<StoreInst>(&*I) ? 1 : 0);
           if(localValues.find(v) != localValues.end()){
             omittableInstructions.insert(I);
-            conditionalDepMap[I->getParent()].insert(tmpDeps.begin(), tmpDeps.end());
+            if(!conditionalDepMap.count(I->getParent()))
+              conditionalDepMap[I->getParent()] = tmpDeps;
+            else
+              conditionalDepMap[I->getParent()].insert(tmpDeps.begin(), tmpDeps.end());
           }
           next:;
         }

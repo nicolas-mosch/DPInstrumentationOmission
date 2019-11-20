@@ -74,6 +74,7 @@ public:
 	void dumpToDot();
 	void dumpInstructionInfo();
 	std::string edgeLabel(Edge<Instruction*, EdgeDepType> *e);
+	std::string nodeLabel(Instruction* inst);
 	void connectToEntry(Instruction* inst);
 	void connectToExit(Instruction* inst);
 	Node<Instruction*> *getEntry() { return entry; }

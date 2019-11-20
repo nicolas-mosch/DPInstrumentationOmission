@@ -14,6 +14,73 @@
 static cl::opt<bool, false> removeTransitiveDeps("removeTransitiveDeps", cl::desc("Remove transitive dependencies"), cl::NotHidden);
 static cl::opt<string> fmap("fmap", cl::desc("DP-FileMapping filename"), cl::value_desc("filename"));
 
+string PDG::nodeLabel(Instruction *inst){
+	std::function<std::string(Instruction*)> getVarName;
+	getVarName = [&](Instruction* I)->std::string
+	{
+		if(isa<AllocaInst>(I)){
+			Value *v = (Value*)I;
+			if(v->hasName()){
+				string r = v->getName().str();
+				std::size_t found = r.find(".addr");
+				if(found != string::npos){
+				return r.erase(found);
+				}
+				return r;
+			}
+			return "!";
+		}
+
+		if(isa<GetElementPtrInst>(I)){
+			string r = getVarName((Instruction*)I->getOperand(0));
+			for(uint i = 1; i < I->getNumOperands(); ++i){
+				if(isa<Instruction>(I->getOperand(i))){
+				r += "[" + getVarName((Instruction*)I->getOperand(i)) + "]";
+				}
+			}
+			return r;
+		}
+
+		if(isa<SExtInst>(I)){
+			return getVarName((Instruction*)I->getOperand(0));
+		}
+		
+		if(isa<StoreInst>(I) || isa<LoadInst>(I)){
+			string r;
+			Value *v = I->getOperand(isa<StoreInst>(I) ? 1 : 0);
+			if(v->hasName()){
+				return getVarName((Instruction*)v);
+			}else{
+				return "*" + getVarName((Instruction*)v);
+			}
+		}
+		
+		Value *v = (Value*)I;
+		if(v->hasName()){
+			return v->getName().str();
+		}
+		return "n/a";
+	};
+	
+	if(isa<StoreInst>(inst) || isa<LoadInst>(inst)){
+		string ret = to_string(getNodeIndex(inst));
+		ret += "\\n";
+		if(isa<StoreInst>(inst)) ret += "write(";
+		else ret += "read(";
+		ret += getVarName(inst);
+		ret += ") ";
+
+		DebugLoc dl = inst->getDebugLoc();
+		if(DebugLoc dl = inst->getDebugLoc()){
+			ret += to_string(dl.getLine());
+			ret += ", ";
+			ret += to_string(dl.getCol());
+		}
+		return ret;
+	}
+	return "?";
+}
+
 string PDG::edgeLabel(Edge<Instruction*, EdgeDepType> *e)
 {
 	switch (e->getType())
@@ -67,16 +134,10 @@ void PDG::dumpToDot(std::string graphName)
 				if(!dl) continue;
 				Instruction *I = node->getItem();
 				if(isa<StoreInst>(I) || isa<LoadInst>(I)){
-					bool isWrite = isa<StoreInst>(I);
-					bool isRead = isa<LoadInst>(I);
 					dotStream << "\t\"" << 
 					getNodeIndex(node) 
-					<< "\" [label=\""/* << getNodeIndex(node) << "\\n"*/
-					//<< getNodeIndex(node) 
-					<< (isWrite ? "write" : (isRead ? "read" : "?")) << "("
-					<< I->getOperand(isWrite ? 1 : 0)->getName().str()
-					<< "): " <<  (dl ? to_string(dl.getLine()) : "") << (dl ? "," : "") << (dl ? to_string(dl.getCol()) : "")
-					<< "\"" << (node->isHighlighted() ? ",style=filled,fillcolor=red": "")
+					<< "\" [label=\"" << nodeLabel(node->getItem()) << "\"" 
+					<< (node->isHighlighted() ? ",style=filled,fillcolor=red": "")
 					<< "];\n";
 				}else if(DbgDeclareInst* DbgDeclare = dyn_cast<DbgDeclareInst>(I)){
 					dotStream << "\t\"" << 
